@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import textwrap
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 import pytest
 import tomlkit
@@ -25,6 +25,10 @@ from dagster_shared.serdes.objects.package_entry import json_for_all_components
 from typing_extensions import TypeAlias
 
 ensure_dagster_dg_tests_import()
+
+from dagster_dg.scaffold import MIN_DAGSTER_SCAFFOLD_PROJECT_ROOT_OPTION_VERSION
+from dagster_dg.utils import ensure_dagster_dg_tests_import
+from dagster_shared.libraries import increment_micro_version
 
 from dagster_dg_tests.utils import (
     ProxyRunner,
@@ -491,7 +495,7 @@ def test_scaffold_component_command_with_non_matching_module_name():
             "scaffold", "dagster_test.components.AllMetadataEmptyComponent", "qux"
         )
         assert_runner_result(result, exit_0=False)
-        assert "Cannot find module `foo_bar.lib`" in result.output
+        assert "Cannot find module `foo_bar" in result.output
 
 
 @pytest.mark.parametrize("in_workspace", [True, False])
@@ -550,7 +554,11 @@ def test_scaffold_component_fails_defs_module_does_not_exist() -> None:
 def test_scaffold_component_succeeds_scaffolded_component_type() -> None:
     with (
         ProxyRunner.test() as runner,
-        isolated_example_project_foo_bar(runner),
+        isolated_example_project_foo_bar(
+            runner,
+            # plugins not discoverable in process due to not doing a proper install
+            python_environment="uv_managed",
+        ),
     ):
         result = runner.invoke("scaffold", "component-type", "Baz")
         assert_runner_result(result)
@@ -757,6 +765,32 @@ def test_scaffold_multi_asset_params() -> None:
         assert "baz/qux" in output
 
 
+def test_scaffold_job() -> None:
+    with (
+        ProxyRunner.test() as runner,
+        isolated_example_project_foo_bar(runner),
+    ):
+        result = runner.invoke("scaffold", "dagster.job", "jobs/my_pipeline.py")
+        assert_runner_result(result)
+        assert Path("src/foo_bar/defs/jobs/my_pipeline.py").exists()
+        assert (
+            Path("src/foo_bar/defs/jobs/my_pipeline.py")
+            .read_text()
+            .startswith("import dagster as dg")
+        )
+        assert "@dg.job" in Path("src/foo_bar/defs/jobs/my_pipeline.py").read_text()
+        job_content = Path("src/foo_bar/defs/jobs/my_pipeline.py").read_text()
+        # Check for simple job scaffolding
+        assert "pass" in job_content
+        assert not Path("src/foo_bar/defs/jobs/my_pipeline.py").is_dir()
+        assert not Path("src/foo_bar/defs/jobs/component.yaml").exists()
+
+        # Create another job file to verify it works consistently
+        result = runner.invoke("scaffold", "dagster.job", "jobs/another_job.py")
+        assert_runner_result(result)
+        assert Path("src/foo_bar/defs/jobs/another_job.py").exists()
+
+
 def test_scaffold_sensor() -> None:
     with (
         ProxyRunner.test() as runner,
@@ -781,10 +815,27 @@ dbt_project_path = Path("../stub_projects/dbt_project_location/defs/jaffle_shop"
         ["--project-path", str(dbt_project_path)],
     ],
 )
-def test_scaffold_dbt_project_instance(params) -> None:
+@pytest.mark.parametrize(
+    "dagster_version",
+    [
+        "editable",  # most recent
+        increment_micro_version(MIN_DAGSTER_SCAFFOLD_PROJECT_ROOT_OPTION_VERSION, -1),
+    ],
+    ids=str,
+)
+def test_scaffold_dbt_project_instance(params, dagster_version) -> None:
+    project_kwargs: dict[str, Any] = (
+        {"use_editable_dagster": True}
+        if dagster_version == "editable"
+        else {
+            "use_editable_dagster": False,
+            "dagster_version": dagster_version,
+        }
+    )
+
     with (
         ProxyRunner.test() as runner,
-        isolated_example_project_foo_bar(runner),
+        isolated_example_project_foo_bar(runner, python_environment="uv_managed", **project_kwargs),
     ):
         # We need to add dagster-dbt also because we are using editable installs. Only
         # direct dependencies will be resolved by uv.tool.sources.
