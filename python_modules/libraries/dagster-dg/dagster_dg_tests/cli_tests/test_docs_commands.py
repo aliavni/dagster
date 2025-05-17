@@ -1,5 +1,5 @@
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 import pytest
 from dagster_dg.utils import ensure_dagster_dg_tests_import, get_venv_executable, install_to_venv
@@ -34,8 +34,9 @@ from dagster_dg_tests.utils import (
 # ########################
 
 
-@pytest.mark.parametrize("port", [None, find_free_port()])
-def test_docs_component_type_success(port: Optional[int]):
+@pytest.mark.parametrize("get_port", [None, find_free_port])
+def test_docs_component_type_success(get_port: Optional[Callable]):
+    port = get_port() if get_port else None
     with (
         ProxyRunner.test(use_fixed_test_components=True) as runner,
         isolated_components_venv(runner),
@@ -197,7 +198,10 @@ def _sort_sample_yamls(contents: dict) -> None:
 def test_build_docs_success_matches_graphql():
     with (
         ProxyRunner.test() as runner,
-        isolated_example_project_foo_bar(runner),
+        isolated_example_project_foo_bar(
+            runner,
+            python_environment="uv_managed",
+        ),
     ):
         result = runner.invoke("docs", "build", str(Path.cwd() / "built_docs"))
         assert_runner_result(result)

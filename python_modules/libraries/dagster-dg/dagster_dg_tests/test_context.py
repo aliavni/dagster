@@ -10,7 +10,7 @@ from typing import Any, Union
 
 import dagster_dg.context
 import pytest
-from dagster._utils.env import activate_venv
+from dagster_dg.cli.utils import activate_venv
 from dagster_dg.component import RemotePluginRegistry
 from dagster_dg.config import (
     DgFileConfigDirectoryType,
@@ -19,7 +19,6 @@ from dagster_dg.config import (
     get_type_str,
 )
 from dagster_dg.context import DG_UPDATE_CHECK_ENABLED_ENV_VAR, DG_UPDATE_CHECK_INTERVAL, DgContext
-from dagster_dg.error import DgError
 from dagster_dg.utils import (
     TomlPath,
     create_toml_node,
@@ -183,7 +182,9 @@ def test_context_with_user_config(monkeypatch, user_config_file: str):
 def test_context_with_root_layout():
     with (
         ProxyRunner.test() as runner,
-        isolated_example_project_foo_bar(runner, in_workspace=False, package_layout="root"),
+        isolated_example_project_foo_bar(
+            runner, uv_sync=True, in_workspace=False, package_layout="root"
+        ),
     ):
         context = DgContext.from_file_discovery_and_command_line_config(Path.cwd(), {})
         assert context.root_path == Path.cwd()
@@ -270,7 +271,7 @@ def test_missing_dg_plugin_module_in_manifest_warning():
     with (
         ProxyRunner.test() as runner,
         isolated_example_project_foo_bar(
-            runner, in_workspace=False, python_environment="active", skip_venv=True
+            runner, in_workspace=False, python_environment="active", uv_sync=False
         ),
     ):
         subprocess.check_output(["uv", "venv"])
@@ -288,7 +289,10 @@ def test_dagster_version(python_environment: DgProjectPythonEnvironmentFlag):
     with (
         ProxyRunner.test() as runner,
         isolated_example_project_foo_bar(
-            runner, in_workspace=False, python_environment=python_environment
+            runner,
+            in_workspace=False,
+            python_environment=python_environment,
+            uv_sync=True,
         ),
     ):
         assert Path(".venv").exists()
@@ -370,7 +374,10 @@ def test_dg_up_to_date_warning(monkeypatch):
 def test_fail_on_dagster_dg_less_than_dagster(monkeypatch):
     match_strs = ["Current `dg` version", "incompatible with `dagster` version"]
 
-    with ProxyRunner.test() as runner, isolated_example_project_foo_bar(runner):
+    with (
+        ProxyRunner.test() as runner,
+        isolated_example_project_foo_bar(runner, python_environment="uv_managed"),
+    ):
         context = DgContext.for_project_environment(Path.cwd(), {})
 
         # Versions are the same, (0+dev) for the dev versions of packages, so no problem
@@ -508,9 +515,7 @@ def test_invalid_config_project(config_file: ConfigFileType):
             with modify_dg_toml_config_as_dict(Path(config_file)) as toml:
                 toml["project"]["python_environment"]["active"] = True
                 toml["project"]["python_environment"]["uv_managed"] = True
-            with pytest.raises(
-                DgError, match=f"Found conflicting settings in `{python_env_full_key}`"
-            ):
+            with dg_exits(f"Found conflicting settings in `{python_env_full_key}`"):
                 DgContext.from_file_discovery_and_command_line_config(Path.cwd(), {})
 
 
@@ -559,7 +564,12 @@ def test_code_location_config(config_file: ConfigFileType):
 def test_virtual_env_mismatch_warning():
     with (
         ProxyRunner.test() as runner,
-        isolated_example_project_foo_bar(runner, in_workspace=False, python_environment="active"),
+        isolated_example_project_foo_bar(
+            runner,
+            in_workspace=False,
+            python_environment="active",
+            uv_sync=True,
+        ),
     ):
         with dg_warns("virtual environment does not match"):
             DgContext.for_project_environment(Path.cwd(), {})
@@ -591,7 +601,7 @@ def _set_and_detect_error(
 ):
     with modify_dg_toml_config_as_dict(Path(config_file)) as toml:
         create_toml_node(toml, path, config_value)
-    with pytest.raises(DgError, match=re.escape(error_message)):
+    with dg_exits(re.escape(error_message)):
         DgContext.from_file_discovery_and_command_line_config(Path.cwd(), {})
 
 
@@ -601,7 +611,12 @@ def _set_and_detect_invalid_key(
     path = toml_path_from_str(str_path)
     leading_str_path, key = toml_path_to_str(path[:-1]), path[-1]
     full_leading_str_path = _get_full_str_path(config_file, leading_str_path)
-    error_message = rf"Unrecognized fields at `{full_leading_str_path}`: ['{key}']"
+    error_message = "\n".join(
+        [
+            rf"Unrecognized fields at `{full_leading_str_path}`:",
+            rf"    ['{key}']",
+        ]
+    )
     _set_and_detect_error(config_file, path, config_value, error_message)
 
 
@@ -612,8 +627,11 @@ def _set_and_detect_mistyped_value(
     path = toml_path_from_str(str_path)
     expected_str = get_type_str(expected_type)
     full_str_path = _get_full_str_path(config_file, str_path)
-    error_message = (
-        rf"Invalid value for `{full_str_path}`. Expected {expected_str}, got `{config_value}`"
+    error_message = "\n".join(
+        [
+            rf"Invalid value for `{full_str_path}`:",
+            rf"    Expected {expected_str}, got `{config_value}`",
+        ]
     )
     _set_and_detect_error(config_file, path, config_value, error_message)
 
@@ -625,8 +643,13 @@ def _set_and_detect_missing_required_key(
     path = toml_path_from_str(str_path)
     expected_str = get_type_str(expected_type)
     full_str_path = _get_full_str_path(config_file, str_path)
-    error_message = rf"Missing required value for `{full_str_path}`. Expected {expected_str}"
+    error_message = "\n".join(
+        [
+            rf"Missing required value for `{full_str_path}`:",
+            rf"   Expected {expected_str}",
+        ]
+    )
     with modify_dg_toml_config_as_dict(Path(config_file)) as toml:
         delete_toml_node(toml, path)
-    with pytest.raises(DgError, match=re.escape(error_message)):
+    with dg_exits(re.escape(error_message)):
         DgContext.from_file_discovery_and_command_line_config(Path.cwd(), {})

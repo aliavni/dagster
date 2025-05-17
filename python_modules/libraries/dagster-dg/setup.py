@@ -34,7 +34,7 @@ setup(
     install_requires=[
         "Jinja2",
         "tomlkit",
-        "click>=8",
+        "click>=8,<8.2",
         "click-aliases",
         "typing_extensions>=4.4.0,<5",
         "gql[requests]",
@@ -65,11 +65,12 @@ setup(
     extras_require={
         "test": [
             "click",
-            "dagster",
+            f"dagster{pin}",
             "freezegun",
             "psutil",
             "pydantic",
             "pytest",
+            f"dagster-graphql{pin}",
         ],
     },
 )
