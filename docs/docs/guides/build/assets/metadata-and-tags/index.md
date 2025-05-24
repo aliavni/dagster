@@ -1,6 +1,7 @@
 ---
-title: "Asset metadata and tags"
+description: Use metadata in Dagster to attach ownership information to assets, organize assets with tags, link assets with source code, and attach complex information to assets, such as Markdown descriptions, table schemas, or time series information.
 sidebar_position: 800
+title: Asset metadata and tags
 ---
 
 [Assets](/guides/build/assets/) feature prominently in the Dagster UI. Attaching information to assets allows you to understand where they're stored, what they contain, and how they should be organized.
@@ -105,7 +106,7 @@ There are several data types and constraints available on <PyObject section="met
 ### Column lineage metadata \{#column-lineage}
 
 :::tip
-Many integrations such as [dbt](/integrations/libraries/dbt/) automatically attach column lineage metadata out-of-the-box.
+Many integrations such as [dbt](/integrations/libraries/dbt) automatically attach column lineage metadata out-of-the-box.
 :::
 
 [Column lineage metadata](/guides/build/assets/metadata-and-tags/column-level-lineage) is a powerful way to track how columns in a table are derived from other columns:

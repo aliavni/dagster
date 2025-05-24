@@ -1,6 +1,7 @@
 ---
-title: Docker agent configuration
+description: Configure Docker agents in Dagster+.
 sidebar_position: 200
+title: Docker agent configuration
 ---
 
 :::note
@@ -8,8 +9,6 @@ This guide is applicable to Dagster+.
 :::
 
 This reference describes the various configuration options Dagster+ currently supports for Docker agents
-
----
 
 ## Environment variables and secrets
 

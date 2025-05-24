@@ -2,8 +2,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from dagster.components.test.test_cases import BASIC_INVALID_VALUE, BASIC_VALID_VALUE
 from dagster_dg.utils import ensure_dagster_dg_tests_import, pushd
+from dagster_test.components.test_utils.test_cases import BASIC_INVALID_VALUE, BASIC_VALID_VALUE
 
 ensure_dagster_dg_tests_import()
 
@@ -21,7 +21,7 @@ from dagster_dg_tests.utils import (
 )
 
 NO_TELEMETRY_COMMANDS = {
-    ("utils", "inspect-component-type"),
+    ("utils", "inspect-component"),
     # Is actually instrumented, but since subcommands are dynamically generated we test manually
     ("scaffold",),
 }
@@ -149,7 +149,7 @@ def test_telemetry_scaffold_component(caplog: pytest.LogCaptureFixture) -> None:
     ):
         caplog.clear()
         result = runner.invoke(
-            "scaffold", "dagster_test.components.AllMetadataEmptyComponent", "qux"
+            "scaffold", "defs", "dagster_test.components.AllMetadataEmptyComponent", "qux"
         )
         assert result.exit_code == 0, result.output + " " + str(result.exception)
         assert Path("foo_bar/defs/qux").exists()

@@ -10,10 +10,6 @@ sidebar_custom_props:
 partnerlink: https://www.fivetran.com/
 ---
 
-import Beta from '@site/docs/partials/\_Beta.md';
-
-<Beta />
-
 This guide provides instructions for using Dagster with Fivetran using the `dagster-fivetran` library. Your Fivetran connector tables can be represented as assets in the Dagster asset graph, allowing you to track lineage and dependencies between Fivetran assets and data assets you are already modeling in Dagster. You can also use Dagster to orchestrate Fivetran connectors, allowing you to trigger syncs for these on a cadence or based on upstream data changes.
 
 :::note
@@ -45,9 +41,7 @@ Your Fivetran connectors must have been synced at least once to be represented i
 
 To get started, you'll need to install the `dagster` and `dagster-fivetran` Python packages:
 
-```bash
-pip install dagster dagster-fivetran
-```
+<PackageInstallInstructions packageName="dagster-fivetran" />
 
 ## Represent Fivetran assets in the asset graph
 
@@ -144,7 +138,6 @@ Dagster allows you to define assets that are downstream of specific Fivetran tab
 />
 
 In the downstream asset, you may want direct access to the contents of the Fivetran table. To do so, you can customize the code within your `@asset`-decorated function to load upstream data.
-
 
 ### About Fivetran
 

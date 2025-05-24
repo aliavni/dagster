@@ -1,6 +1,7 @@
 ---
-title: dagster-cloud CLI reference
+description: dagster-cloud CLI reference
 sidebar_position: 200
+title: dagster-cloud CLI reference
 ---
 
 ## Custom configuration file path

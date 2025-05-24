@@ -14,6 +14,10 @@ from dagster._core.definitions.assets import AssetsDefinition
 from dagster._core.definitions.definitions_class import Definitions
 from dagster._core.definitions.events import AssetMaterialization
 from dagster._core.definitions.materialize import materialize
+from dagster._core.definitions.metadata.source_code import (
+    CodeReferencesMetadataValue,
+    LocalFileCodeReference,
+)
 from dagster._core.definitions.result import MaterializeResult
 from dagster._core.execution.context.asset_execution_context import AssetExecutionContext
 from dagster._core.instance_for_test import instance_for_test
@@ -22,15 +26,16 @@ from dagster._utils import alter_sys_path
 from dagster._utils.env import environ
 from dagster.components import ComponentLoadContext
 from dagster.components.cli import cli
-from dagster.components.core.defs_module import get_component
 from dagster.components.resolved.context import ResolutionException
 from dagster.components.resolved.core_models import AssetAttributesModel
+from dagster_shared import check
 from dagster_sling import SlingReplicationCollectionComponent, SlingResource
 
 ensure_dagster_tests_import()
 
 from dagster_tests.components_tests.utils import (
     build_component_defs_for_test,
+    get_underlying_component,
     temp_code_location_bar,
 )
 
@@ -55,7 +60,7 @@ def _modify_yaml(path: Path) -> Iterator[dict[str, Any]]:
 def temp_sling_component_instance(
     replication_specs: Optional[list[dict[str, Any]]] = None,
 ) -> Iterator[tuple[SlingReplicationCollectionComponent, Definitions]]:
-    """Sets up a temporary directory with a replication.yaml and component.yaml file that reference
+    """Sets up a temporary directory with a replication.yaml and defs.yaml file that reference
     the proper temp path.
     """
     with (
@@ -71,8 +76,8 @@ def temp_sling_component_instance(
                 placeholder_data = data["streams"].pop("<PLACEHOLDER>")
                 data["streams"][f"file://{temp_dir}/input.csv"] = placeholder_data
 
-            with _modify_yaml(component_path / "component.yaml") as data:
-                # If replication specs were provided, overwrite the default one in the component.yaml
+            with _modify_yaml(component_path / "defs.yaml") as data:
+                # If replication specs were provided, overwrite the default one in the defs.yaml
                 if replication_specs:
                     data["attributes"]["replications"] = replication_specs
 
@@ -80,7 +85,7 @@ def temp_sling_component_instance(
                 data["attributes"]["sling"]["connections"][0]["instance"] = f"{temp_dir}/duckdb"
 
             context = ComponentLoadContext.for_test().for_path(component_path)
-            component = get_component(context)
+            component = get_underlying_component(context)
             assert isinstance(component, SlingReplicationCollectionComponent)
             yield component, component.build_defs(context)
 
@@ -98,6 +103,15 @@ def test_python_attributes() -> None:
         }
         # inherited from directory name
         assert defs.get_assets_def("input_duckdb").op.name == "replication"
+        refs = check.inst(
+            defs.get_assets_def("input_duckdb").metadata_by_key[AssetKey("input_duckdb")][
+                "dagster/code_references"
+            ],
+            CodeReferencesMetadataValue,
+        )
+        assert len(refs.code_references) == 1
+        assert isinstance(refs.code_references[0], LocalFileCodeReference)
+        assert refs.code_references[0].file_path.endswith("replication.yaml")
 
 
 def test_python_attributes_op_name() -> None:
@@ -184,7 +198,11 @@ def test_sling_subclass() -> None:
     "attributes, assertion, should_error",
     [
         ({"group_name": "group"}, lambda asset_spec: asset_spec.group_name == "group", False),
-        ({"owners": ["team:analytics"]}, None, True),
+        (
+            {"owners": ["team:analytics"]},
+            lambda asset_spec: asset_spec.owners == ["team:analytics"],
+            False,
+        ),
         ({"tags": {"foo": "bar"}}, lambda asset_spec: asset_spec.tags.get("foo") == "bar", False),
         ({"kinds": ["snowflake"]}, lambda asset_spec: "snowflake" in asset_spec.kinds, False),
         (
@@ -193,7 +211,7 @@ def test_sling_subclass() -> None:
             and asset_spec.tags.get("foo") == "bar",
             False,
         ),
-        ({"code_version": "1"}, None, True),
+        ({"code_version": "1"}, lambda asset_spec: asset_spec.code_version == "1", False),
         (
             {"description": "some description"},
             lambda asset_spec: asset_spec.description == "some description",
@@ -241,7 +259,7 @@ def test_sling_subclass() -> None:
         "key_prefix",
     ],
 )
-def test_asset_attributes(
+def test_translation(
     attributes: Mapping[str, Any],
     assertion: Optional[Callable[[AssetSpec], bool]],
     should_error: bool,
@@ -250,7 +268,7 @@ def test_asset_attributes(
     with (
         wrapper,
         temp_sling_component_instance(
-            [{"path": "./replication.yaml", "asset_attributes": attributes}]
+            [{"path": "./replication.yaml", "translation": attributes}]
         ) as (component, defs),
     ):
         key = AssetKey(attributes.get("key", "input_duckdb"))
@@ -265,16 +283,16 @@ def test_asset_attributes(
 IGNORED_KEYS = {"skippable"}
 
 
-def test_asset_attributes_is_comprehensive():
+def test_translation_is_comprehensive():
     all_asset_attribute_keys = []
-    for test_arg in test_asset_attributes.pytestmark[0].args[1]:  # pyright: ignore[reportFunctionMemberAccess]
+    for test_arg in test_translation.pytestmark[0].args[1]:  # pyright: ignore[reportFunctionMemberAccess]
         all_asset_attribute_keys.extend(test_arg[0].keys())
     from dagster.components.resolved.core_models import AssetAttributesModel
 
     assert set(AssetAttributesModel.model_fields.keys()) - IGNORED_KEYS == set(
         all_asset_attribute_keys
     ), (
-        f"The test_asset_attributes test does not cover all fields, missing: {set(AssetAttributesModel.model_fields.keys()) - IGNORED_KEYS - set(all_asset_attribute_keys)}"
+        f"The test_translation test does not cover all fields, missing: {set(AssetAttributesModel.model_fields.keys()) - IGNORED_KEYS - set(all_asset_attribute_keys)}"
     )
 
 
@@ -295,7 +313,7 @@ def test_scaffold_sling():
         )
         assert result.exit_code == 0
         assert Path("bar/components/qux/replication.yaml").exists()
-        assert Path("bar/components/qux/component.yaml").exists()
+        assert Path("bar/components/qux/defs.yaml").exists()
 
 
 def test_spec_is_available_in_scope() -> None:
@@ -303,7 +321,7 @@ def test_spec_is_available_in_scope() -> None:
         [
             {
                 "path": "./replication.yaml",
-                "asset_attributes": {"metadata": {"asset_key": "{{ spec.key.path }}"}},
+                "translation": {"metadata": {"asset_key": "{{ spec.key.path }}"}},
             }
         ]
     ) as (_, defs):
@@ -337,7 +355,7 @@ def test_udf_map_spec(map_fn: Callable[[AssetSpec], Any]) -> None:
         {
             "sling": {},
             "replications": [
-                {"path": str(REPLICATION_PATH), "asset_attributes": "{{ map_spec(spec) }}"}
+                {"path": str(REPLICATION_PATH), "translation": "{{ map_spec(spec) }}"}
             ],
         },
     )

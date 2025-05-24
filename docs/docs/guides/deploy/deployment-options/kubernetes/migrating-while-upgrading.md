@@ -1,6 +1,6 @@
 ---
 title: 'Migrating a Dagster instance while upgrading Dagster in a Kubernetes environment'
-description: We walk through how to migrate your Dagster instance using a Kubernetes Job from the Helm chart.
+description: Migrate your open source Dagster instance using a Kubernetes Job from the Helm chart.
 ---
 
 When upgrading your Dagster version, you may also need to migrate your Dagster instance. Migrations will only be required if you are upgrading your minor version.
@@ -11,7 +11,7 @@ In this guide, we'll walk you through the migration process in a Kubernetes envi
 
 Before you get started, complete the following:
 
-- **Check the [Dagster migration guide](/guides/migrate/version-migration).** Use the guide to verify any additional steps you may need to take to upgrade your Dagster version.
+- **Check the [Dagster migration guide](/migration/version-migration).** Use the guide to verify any additional steps you may need to take to upgrade your Dagster version.
 - **Back up your PostgreSQL database.**
 
 ## Step 1: Upgrade the Helm chart

@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -25,12 +26,12 @@ import requests
 import tomlkit
 import tomlkit.items
 from click.testing import CliRunner, Result
-from dagster._utils.env import activate_venv
 from dagster_dg.cli import (
     DG_CLI_MAX_OUTPUT_WIDTH,
     cli,
     cli as dg_cli,
 )
+from dagster_dg.cli.utils import activate_venv
 from dagster_dg.config import DgProjectPythonEnvironmentFlag, detect_dg_config_file_format
 from dagster_dg.utils import (
     create_toml_node,
@@ -133,6 +134,22 @@ ConfigFileType: TypeAlias = Literal["dg.toml", "pyproject.toml"]
 PackageLayoutType: TypeAlias = Literal["root", "src"]
 
 
+def install_editable_dg_dev_packages_to_venv(venv_path: Path) -> None:
+    install_editable_dagster_packages_to_venv(
+        venv_path,
+        [
+            "dagster",
+            "dagster-webserver",
+            "dagster-graphql",
+            "dagster-test",
+            "dagster-pipes",
+            "libraries/dagster-dg",
+            "libraries/dagster-shared",
+            "libraries/dagster-cloud-cli",
+        ],
+    )
+
+
 @contextmanager
 def isolated_example_workspace(
     runner: Union[CliRunner, "ProxyRunner"],
@@ -141,7 +158,7 @@ def isolated_example_workspace(
     use_editable_dagster: bool = True,
     workspace_config_file_type: ConfigFileType = "dg.toml",
     project_config_file_type: ConfigFileType = "pyproject.toml",
-) -> Iterator[None]:
+) -> Iterator[Path]:
     runner = ProxyRunner(runner) if isinstance(runner, CliRunner) else runner
     dagster_git_repo_dir = str(discover_git_root(Path(__file__)))
     with (
@@ -184,18 +201,11 @@ def isolated_example_workspace(
             if create_venv:
                 subprocess.run(["uv", "venv", ".venv"], check=True)
                 venv_path = Path.cwd() / ".venv"
-                install_editable_dagster_packages_to_venv(
+
+                install_editable_dg_dev_packages_to_venv(
                     venv_path,
-                    [
-                        "dagster",
-                        "dagster-webserver",
-                        "dagster-graphql",
-                        "dagster-test",
-                        "dagster-pipes",
-                        "libraries/dagster-shared",
-                    ],
                 )
-            yield
+            yield Path.cwd()
 
 
 _MIN_DAGSTER_COMPONENTS_MERGED_VERSION = Version("1.10.8")
@@ -207,15 +217,14 @@ _MIN_DAGSTER_COMPONENTS_MERGED_VERSION = Version("1.10.8")
 def isolated_example_project_foo_bar(
     runner: Union[CliRunner, "ProxyRunner"],
     in_workspace: bool = True,
-    populate_cache: bool = False,
     component_dirs: Sequence[Path] = [],
     config_file_type: ConfigFileType = "pyproject.toml",
     package_layout: PackageLayoutType = "src",
     use_editable_dagster: bool = True,
     dagster_version: Optional[Union[str, Version]] = None,
-    python_environment: DgProjectPythonEnvironmentFlag = "uv_managed",
+    python_environment: DgProjectPythonEnvironmentFlag = "active",
     # Only works when python_environment is "active"
-    skip_venv: bool = False,
+    uv_sync: bool = False,
 ) -> Iterator[Path]:
     """Scaffold a project named foo_bar in an isolated filesystem.
 
@@ -242,6 +251,11 @@ def isolated_example_project_foo_bar(
             Version(dagster_version) if isinstance(dagster_version, str) else dagster_version
         )
 
+    if python_environment == "active":
+        uv_sync_args = ["--uv-sync"] if uv_sync else ["--no-uv-sync"]
+    else:
+        uv_sync_args = []
+
     runner = ProxyRunner(runner) if isinstance(runner, CliRunner) else runner
     dagster_git_repo_dir = str(discover_git_root(Path(__file__)))
     project_path = Path("foo-bar")
@@ -254,15 +268,11 @@ def isolated_example_project_foo_bar(
             "scaffold",
             "project",
             "foo-bar",
+            *uv_sync_args,
             *["--python-environment", python_environment],
-            *(["--no-populate-cache"] if not populate_cache else []),
             *(["--use-editable-dagster", dagster_git_repo_dir] if use_editable_dagster else []),
         ]
         result = runner.invoke(*args)
-
-        if python_environment == "active" and not skip_venv:
-            venv_path = Path("foo-bar", ".venv")
-            subprocess.run(["python", "-m", "venv", str(venv_path)], check=True)
 
         assert_runner_result(result)
         if config_file_type == "dg.toml":
@@ -270,6 +280,8 @@ def isolated_example_project_foo_bar(
                 Path("foo-bar") / "pyproject.toml",
                 Path("foo-bar") / "dg.toml",
             )
+
+        module_parent_dir = Path("foo-bar").joinpath("src").resolve()
         if package_layout == "root":
             # Move the src directory to the root of the project
             curr_pkg_root = Path("foo-bar") / "src" / "foo_bar"
@@ -277,11 +289,14 @@ def isolated_example_project_foo_bar(
             shutil.move(curr_pkg_root, new_pkg_root)
             Path("foo-bar", "src").rmdir()
 
+            module_parent_dir = Path("foo-bar").resolve()
+
             with modify_toml_as_dict(Path("foo-bar/pyproject.toml")) as toml:
                 create_toml_node(toml, ("tool", "hatch", "build", "packages"), ["foo_bar"])
 
-            # Reinstall to venv since package root changed
-            install_to_venv(Path("foo-bar/.venv"), ["-e", "foo-bar"])
+            if python_environment == "active" and not uv_sync:
+                # Reinstall to venv since package root changed
+                install_to_venv(Path("foo-bar/.venv"), ["-e", "foo-bar"])
 
         with clear_module_from_cache("foo_bar"), pushd(project_path):
             # Here we force a particular dagster version in the project. Pretty hacky and not
@@ -289,11 +304,14 @@ def isolated_example_project_foo_bar(
             # version Y installed.
             if dagster_version:
                 uv_add_args = [f"dagster=={dagster_version}"]
+                library_version = library_version_from_core_version(str(dagster_version))
+                uv_add_args.append(f"dagster-shared=={library_version}")
+                uv_add_args.append(f"dagster-dg=={library_version}")
+                uv_add_args.append(f"dagster-cloud-cli=={dagster_version}")
+
                 if dagster_version < _MIN_DAGSTER_COMPONENTS_MERGED_VERSION:
-                    dagster_components_version = library_version_from_core_version(
-                        str(dagster_version)
-                    )
-                    uv_add_args.append(f"dagster-components=={dagster_components_version}")
+                    uv_add_args.append(f"dagster-components=={library_version}")
+
                 subprocess.check_output(["uv", "add", *uv_add_args])
 
             for src_dir in component_dirs:
@@ -301,33 +319,50 @@ def isolated_example_project_foo_bar(
                 components_dir = Path.cwd() / "src" / "foo_bar" / "defs" / component_name
                 components_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(src_dir, components_dir, dirs_exist_ok=True)
-            yield Path.cwd()
+
+            # if in "active" mode, add inject the parent directory to sys.path so the modules
+            # can be imported in this process
+            injected_path = str(module_parent_dir) if python_environment == "active" else None
+
+            # dont insert at 0 to avoid removal by defensive code in load_python_module
+            if injected_path:
+                sys.path.insert(1, injected_path)
+            try:
+                yield Path.cwd()
+            finally:
+                if injected_path:
+                    sys.path.remove(injected_path)
 
 
 @contextmanager
 def isolated_example_component_library_foo_bar(
     runner: Union[CliRunner, "ProxyRunner"],
-    lib_module_name: Optional[str] = None,
+    components_module_name: Optional[str] = None,
 ) -> Iterator[None]:
     runner = ProxyRunner(runner) if isinstance(runner, CliRunner) else runner
-    with isolated_example_project_foo_bar(runner, in_workspace=False):
+    with isolated_example_project_foo_bar(
+        runner,
+        in_workspace=False,
+        # need to pip install to register plugins
+        python_environment="uv_managed",
+    ):
         shutil.rmtree(Path("src/foo_bar/defs"))
 
         # Make it not a project
         with modify_toml(Path("pyproject.toml")) as toml:
             delete_toml_node(toml, ("tool", "dg"))
 
-            # We need to set any alternative lib package name and then install into the
+            # We need to set any alternative components package name and then install into the
             # environment, since it affects entry points which are set at install time.
-            if lib_module_name:
+            if components_module_name:
                 set_toml_node(
                     toml,
                     ("project", "entry-points", "dagster_dg.plugin", "foo_bar"),
-                    lib_module_name,
+                    components_module_name,
                 )
-                lib_dir = Path("src", *lib_module_name.split("."))
-                lib_dir.mkdir(exist_ok=True)
-                (lib_dir / "__init__.py").touch()
+                components_dir = Path("src", *components_module_name.split("."))
+                components_dir.mkdir(exist_ok=True)
+                (components_dir / "__init__.py").touch()
 
         # Install the component library into our venv
         venv_path = Path(".venv")
@@ -565,6 +600,11 @@ def match_terminal_box_output(output: str, expected_output: str):
     return True
 
 
+def match_json_output(output: str, expected_output: str):
+    """Compare two JSON strings, ignoring whitespace and newlines."""
+    return json.dumps(json.loads(output)) == json.dumps(json.loads(expected_output))
+
+
 # Windows sometimes provides short (8.3) paths in output, which can be difficult to match exactly.
 def normalize_windows_path(path: str) -> str:
     """Convert a Windows short (8.3) path to its long form.
@@ -638,8 +678,8 @@ class ProxyRunner:
         # We need to find the right spot to inject global options. For the `dg scaffold`
         # command, we need to inject the global options before the final subcommand. For everything
         # else they can be appended at the end of the options.
-        if args[0] == "scaffold":
-            index = 1
+        if args[0] == "scaffold" and args[1] == "defs":
+            index = 2
         elif "--help" in args:
             index = args.index("--help")
         elif "--" in args:
@@ -700,13 +740,20 @@ COMPONENT_INTEGRATION_TEST_DIR = (
 
 @contextlib.contextmanager
 def create_project_from_components(
-    runner: ProxyRunner, *src_paths: str, local_component_defn_to_inject: Optional[Path] = None
+    runner: ProxyRunner,
+    *src_paths: str,
+    local_component_defn_to_inject: Optional[Path] = None,
+    python_environment: DgProjectPythonEnvironmentFlag = "active",
 ) -> Iterator[Path]:
     """Scaffolds a project with the given components in a temporary directory,
     injecting the provided local component defn into each component's __init__.py.
     """
     origin_paths = [COMPONENT_INTEGRATION_TEST_DIR / src_path for src_path in src_paths]
-    with isolated_example_project_foo_bar(runner, component_dirs=origin_paths):
+    with isolated_example_project_foo_bar(
+        runner,
+        component_dirs=origin_paths,
+        python_environment=python_environment,
+    ):
         for src_path in src_paths:
             components_dir = Path.cwd() / "src" / "foo_bar" / "defs" / src_path.split("/")[-1]
             if local_component_defn_to_inject:
