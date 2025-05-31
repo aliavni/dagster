@@ -15,6 +15,7 @@ export const useAssetGraphSupplementaryData = (
 ): {loading: boolean; data: SupplementaryInformation} => {
   const {liveDataByNode} = useAssetsHealthData(
     useMemo(() => nodes.map((node) => node.assetKey), [nodes]),
+    'AssetGraphSupplementaryData', // Separate thread to avoid starving UI
   );
 
   const loading = Object.keys(liveDataByNode).length !== nodes.length;
@@ -28,7 +29,7 @@ export const useAssetGraphSupplementaryData = (
           value: status,
         });
         acc[supplementaryDataKey] = acc[supplementaryDataKey] || [];
-        acc[supplementaryDataKey].push(liveData.assetKey);
+        acc[supplementaryDataKey].push(liveData.key);
         return acc;
       },
       {} as Record<string, AssetKey[]>,
@@ -49,4 +50,7 @@ export const useAssetGraphSupplementaryData = (
   };
 };
 
-const memoizedData = weakMapMemoize((data: string) => JSON.parse(data));
+const memoizedData = weakMapMemoize((data: string) => JSON.parse(data), {
+  ttl: 60,
+  maxEntries: 10,
+});

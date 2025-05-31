@@ -1,4 +1,3 @@
-import importlib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
@@ -6,14 +5,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Annotated, Any, Callable, Optional, Union, cast
 
+from dagster import Resolvable
 from dagster._core.definitions.asset_key import AssetKey
 from dagster._core.definitions.asset_spec import AssetSpec
 from dagster._core.definitions.definitions_class import Definitions
 from dagster._core.execution.context.asset_execution_context import AssetExecutionContext
-from dagster.components import Resolvable
 from dagster.components.component.component import Component
 from dagster.components.core.context import ComponentLoadContext
-from dagster.components.core.defs_module import DefsFolderComponent
+from dagster.components.core.tree import ComponentTree
 from dagster.components.resolved.core_models import AssetAttributesModel, OpSpec, ResolutionContext
 from dagster.components.resolved.model import Resolver
 from dagster.components.scaffold.scaffold import scaffold_with
@@ -24,7 +23,7 @@ from dagster_dbt.asset_decorator import dbt_assets
 from dagster_dbt.asset_utils import get_asset_key_for_model, get_node
 from dagster_dbt.components.dbt_project.scaffolder import DbtProjectComponentScaffolder
 from dagster_dbt.core.resource import DbtCliResource
-from dagster_dbt.dagster_dbt_translator import DagsterDbtTranslator
+from dagster_dbt.dagster_dbt_translator import DagsterDbtTranslator, DagsterDbtTranslatorSettings
 from dagster_dbt.dbt_manifest_asset_selection import DbtManifestAssetSelection
 from dagster_dbt.dbt_project import DbtProject
 
@@ -32,6 +31,13 @@ if TYPE_CHECKING:
     from dagster._core.definitions.assets import AssetsDefinition
 
 TranslationFn: TypeAlias = Callable[[AssetSpec, Mapping[str, Any]], AssetSpec]
+
+
+@dataclass(frozen=True)
+class DagsterDbtComponentsTranslatorSettings(DagsterDbtTranslatorSettings):
+    """Subclass of DagsterDbtTranslatorSettings that enables code references by default."""
+
+    enable_code_references: bool = True
 
 
 def resolve_translation(context: ResolutionContext, model):
@@ -54,13 +60,14 @@ ResolvedTranslationFn: TypeAlias = Annotated[
     TranslationFn,
     Resolver(
         resolve_translation,
+        inject_before_resolve=False,
         model_field_type=Union[str, AssetAttributesModel],
     ),
 ]
 
 
 @dataclass
-class DbtProjectArgs:
+class DbtProjectArgs(Resolvable):
     """Aligns with DbtProject.__new__."""
 
     project_dir: str
@@ -74,9 +81,13 @@ class DbtProjectArgs:
 
 def resolve_dbt_project(context: ResolutionContext, model) -> DbtProject:
     if isinstance(model, str):
-        return DbtProject(context.resolve_source_relative_path(model))
+        return DbtProject(
+            context.resolve_source_relative_path(
+                context.resolve_value(model, as_type=str),
+            )
+        )
 
-    args: DbtProjectArgs = context.resolve_value(model)
+    args = DbtProjectArgs.resolve_from_model(context, model)
 
     kwargs = {}  # use optionally splatted kwargs to avoid redefining default value
     if args.target_path:
@@ -97,7 +108,7 @@ ResolvedDbtProject: TypeAlias = Annotated[
     DbtProject,
     Resolver(
         resolve_dbt_project,
-        model_field_type=Union[str, DbtProjectArgs],
+        model_field_type=Union[str, DbtProjectArgs.model()],
     ),
 ]
 
@@ -128,12 +139,15 @@ class DbtProjectComponent(Component, Resolvable):
     translation: Optional[ResolvedTranslationFn] = None
     select: str = "fqn:*"
     exclude: Optional[str] = None
+    translation_settings: Optional[DagsterDbtComponentsTranslatorSettings] = None
+    prepare_if_dev: bool = True
 
     @cached_property
     def translator(self):
+        translation_settings = self.translation_settings or DagsterDbtComponentsTranslatorSettings()
         if self.translation:
-            return ProxyDagsterDbtTranslator(self.translation)
-        return DagsterDbtTranslator()
+            return ProxyDagsterDbtTranslator(self.translation, translation_settings)
+        return DagsterDbtTranslator(translation_settings)
 
     @cached_property
     def cli_resource(self):
@@ -150,7 +164,8 @@ class DbtProjectComponent(Component, Resolvable):
         )
 
     def build_defs(self, context: ComponentLoadContext) -> Definitions:
-        self.project.prepare_if_dev()
+        if self.prepare_if_dev:
+            self.project.prepare_if_dev()
 
         @dbt_assets(
             manifest=self.project.manifest_path,
@@ -206,9 +221,9 @@ def get_asset_key_for_model_from_module(
 class ProxyDagsterDbtTranslator(DagsterDbtTranslator):
     # get_description conflicts on Component, so cant make it directly a translator
 
-    def __init__(self, fn: TranslationFn):
+    def __init__(self, fn: TranslationFn, settings: Optional[DagsterDbtTranslatorSettings]):
         self._fn = fn
-        super().__init__()
+        super().__init__(settings)
 
     def get_asset_spec(self, manifest, unique_id, project):
         base_asset_spec = super().get_asset_spec(manifest, unique_id, project)
@@ -217,17 +232,8 @@ class ProxyDagsterDbtTranslator(DagsterDbtTranslator):
 
 
 def get_projects_from_dbt_component(components: Path) -> list[DbtProject]:
-    # defer imports for optional deps
-    from dagster_dg.context import DgContext
-
-    projects = []
-    dg_context = DgContext.for_project_environment(components, command_line_config={})
-    context = ComponentLoadContext.for_module(
-        importlib.import_module(dg_context.defs_module_name),
-        project_root=dg_context.root_path,
+    project_components = ComponentTree.load(components).get_all_components(
+        of_type=DbtProjectComponent
     )
-    folder = DefsFolderComponent.get(context)
-    for component in folder.iterate_components():
-        if isinstance(component, DbtProjectComponent):
-            projects.append(component.project)
-    return projects
+
+    return [component.project for component in project_components]
