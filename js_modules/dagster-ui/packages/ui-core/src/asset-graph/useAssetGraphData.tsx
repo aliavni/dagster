@@ -25,6 +25,7 @@ import {AssetKey} from '../assets/types';
 import {AssetGroupSelector, PipelineSelector} from '../graphql/types';
 import {useBlockTraceUntilTrue} from '../performance/TraceContext';
 import {useIndexedDBCachedQuery} from '../search/useIndexedDBCachedQuery';
+import {hashObject} from '../util/hashObject';
 import {workerSpawner} from '../workers/workerSpawner';
 
 export interface AssetGraphFetchScope {
@@ -246,6 +247,10 @@ export function useAssetGraphData(opsQuery: string, options: AssetGraphFetchScop
           setGraphDataLoading(false);
         }
       });
+    return () => {
+      // increase the last processed request ref to effectively cancel any outstanding request
+      lastProcessedRequestRef.current = requestId;
+    };
   }, [
     repoFilteredNodes,
     graphQueryItems,
@@ -273,9 +278,8 @@ export function useAssetGraphData(opsQuery: string, options: AssetGraphFetchScop
 
 const computeGraphData = indexedDBAsyncMemoize<GraphDataState, typeof computeGraphDataWrapper>(
   computeGraphDataWrapper,
-  (props) => {
-    return JSON.stringify(props);
-  },
+  'computeGraphData',
+  (props) => hashObject(props),
 );
 
 const buildGraphQueryItems = (nodes: AssetNode[]) => {
@@ -416,7 +420,11 @@ async function computeGraphDataWrapper(
   spawnComputeGraphDataWorker: () => Worker,
   useWorker: boolean,
 ): Promise<GraphDataState> {
-  if (featureEnabled(FeatureFlag.flagAssetSelectionWorker) && useWorker) {
+  if (
+    featureEnabled(FeatureFlag.flagAssetSelectionWorker) &&
+    useWorker &&
+    typeof window.Worker !== 'undefined'
+  ) {
     const worker = spawnComputeGraphDataWorker();
     return new Promise<GraphDataState>((resolve, reject) => {
       const id = ++_id;
@@ -449,9 +457,8 @@ async function computeGraphDataWrapper(
 
 const buildGraphData = indexedDBAsyncMemoize<GraphData, typeof buildGraphDataWrapper>(
   buildGraphDataWrapper,
-  (props) => {
-    return JSON.stringify(props);
-  },
+  'buildGraphData',
+  (props) => hashObject(props),
 );
 
 async function buildGraphDataWrapper(
@@ -459,7 +466,11 @@ async function buildGraphDataWrapper(
   spawnBuildGraphDataWorker: () => Worker,
   useWorker: boolean,
 ): Promise<GraphData> {
-  if (featureEnabled(FeatureFlag.flagAssetSelectionWorker) && useWorker) {
+  if (
+    featureEnabled(FeatureFlag.flagAssetSelectionWorker) &&
+    useWorker &&
+    typeof window.Worker !== 'undefined'
+  ) {
     const worker = spawnBuildGraphDataWorker();
     return new Promise<GraphData>((resolve) => {
       const id = ++_id;
@@ -498,6 +509,7 @@ const buildExternalAssetQueryItem = (asset: {
     hasMaterializePermission: false,
     opVersion: null,
     isMaterializable: false,
+    isAutoCreatedStub: true,
     tags: [],
     owners: [],
     id: asset.id,
