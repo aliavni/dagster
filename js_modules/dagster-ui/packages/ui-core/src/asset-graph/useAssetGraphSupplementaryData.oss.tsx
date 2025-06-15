@@ -2,19 +2,20 @@ import {useMemo} from 'react';
 
 import {useAssetsHealthData} from '../asset-data/AssetHealthDataProvider';
 import {parseExpression} from '../asset-selection/AssetSelectionSupplementaryDataVisitor';
+import {SupplementaryInformation} from '../asset-selection/types';
 import {getSupplementaryDataKey} from '../asset-selection/util';
 import {AssetKey} from '../assets/types';
-import {AssetNodeForGraphQueryFragment} from './types/useAssetGraphData.types';
-import {SupplementaryInformation} from '../asset-selection/types';
 import {weakMapMemoize} from '../util/weakMapMemoize';
+import {WorkspaceAssetFragment} from '../workspace/WorkspaceContext/types/WorkspaceQueries.types';
 
 const emptyObject = {} as SupplementaryInformation;
 export const useAssetGraphSupplementaryData = (
   selection: string,
-  nodes: AssetNodeForGraphQueryFragment[],
+  nodes: WorkspaceAssetFragment[],
 ): {loading: boolean; data: SupplementaryInformation} => {
   const {liveDataByNode} = useAssetsHealthData(
     useMemo(() => nodes.map((node) => node.assetKey), [nodes]),
+    'AssetGraphSupplementaryData', // Separate thread to avoid starving UI
   );
 
   const loading = Object.keys(liveDataByNode).length !== nodes.length;
@@ -28,7 +29,7 @@ export const useAssetGraphSupplementaryData = (
           value: status,
         });
         acc[supplementaryDataKey] = acc[supplementaryDataKey] || [];
-        acc[supplementaryDataKey].push(liveData.assetKey);
+        acc[supplementaryDataKey].push(liveData.key);
         return acc;
       },
       {} as Record<string, AssetKey[]>,
@@ -49,4 +50,7 @@ export const useAssetGraphSupplementaryData = (
   };
 };
 
-const memoizedData = weakMapMemoize((data: string) => JSON.parse(data));
+const memoizedData = weakMapMemoize((data: string) => JSON.parse(data), {
+  ttl: 60,
+  maxEntries: 10,
+});

@@ -31,6 +31,7 @@ from dagster._core.definitions.partition import AllPartitionsSubset
 from dagster._core.definitions.time_window_partitions import TimeWindowPartitionsSubset
 from dagster._record import copy, record
 from dagster._time import get_current_timestamp
+from dagster._utils.schedules import is_valid_cron_schedule
 from dagster._utils.security import non_secure_md5_hash_str
 from dagster._utils.warnings import disable_dagster_warnings
 
@@ -45,6 +46,9 @@ if TYPE_CHECKING:
     )
     from dagster._core.definitions.declarative_automation.operators.dep_operators import (
         DepsAutomationCondition,
+    )
+    from dagster._core.definitions.declarative_automation.operators.since_operator import (
+        SinceCondition,
     )
 
 
@@ -260,7 +264,7 @@ class AutomationCondition(ABC, Generic[T_EntityKey]):
 
     def since(
         self, reset_condition: "AutomationCondition[T_EntityKey]"
-    ) -> "BuiltinAutomationCondition[T_EntityKey]":
+    ) -> "SinceCondition[T_EntityKey]":
         """Returns an AutomationCondition that is true if this condition has ever been
         true since the last time the reset condition became true.
         """
@@ -576,6 +580,11 @@ class AutomationCondition(ABC, Generic[T_EntityKey]):
             CronTickPassedCondition,
         )
 
+        check.param_invariant(
+            is_valid_cron_schedule(cron_schedule),
+            "cron_schedule",
+            f"Invalid cron schedule: {cron_schedule}",
+        )
         return CronTickPassedCondition(cron_schedule=cron_schedule, cron_timezone=cron_timezone)
 
     @public
@@ -932,7 +941,7 @@ def _compute_subset_value_str(subset: SerializableEntitySubset) -> str:
     elif isinstance(subset.value, TimeWindowPartitionsSubset):
         return str(
             [
-                (tw.start.timestamp(), tw.end.timestamp())
+                (tw.start_timestamp, tw.end_timestamp)
                 for tw in sorted(subset.value.included_time_windows)
             ]
         )
